@@ -2,19 +2,18 @@
 
 Reference documentation for setting up and running an AI engineering team — autonomous AI agents that work as software engineers on dedicated VMs.
 
+## Quick Start
+
+New here? Follow the **[quickstart.md](quickstart.md)** — it takes you from zero to a running AI agent you can chat with via Telegram, WhatsApp, or Slack.
+
 ## Contents
 
 | Document | Description |
 |----------|-------------|
+| [quickstart.md](quickstart.md) | End-to-end guide: accounts, provisioning, agent setup, messaging |
 | [infrastructure.md](infrastructure.md) | VM creation, SSH hardening, firewall, security configuration |
 | [software-stack.md](software-stack.md) | Development tools, languages, remote access (VNC/noVNC), multi-agent setup |
 | [ai-engineer-identity.md](ai-engineer-identity.md) | Baseline identity, personality, and operating guidelines for an AI engineer agent |
-
-## Quick Start
-
-1. **Provision a VM** — Follow [infrastructure.md](infrastructure.md) to create and harden an Ubuntu VM
-2. **Install software** — Use [software-stack.md](software-stack.md) to set up the development environment
-3. **Configure the agent** — Adapt [ai-engineer-identity.md](ai-engineer-identity.md) as the agent's identity file
 
 ## License
 
