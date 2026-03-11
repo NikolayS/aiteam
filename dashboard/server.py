@@ -512,7 +512,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = collect_all()
             self._send(200, "application/json", json.dumps(data, indent=2))
         elif path in ("/", ""):
-            html = HTML_TEMPLATE.replace("{team}", TEAM_NAME)
+            html = HTML_TEMPLATE.format(team=TEAM_NAME)
             self._send(200, "text/html; charset=utf-8", html)
         else:
             self.send_response(302)
