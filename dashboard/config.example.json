@@ -1,0 +1,25 @@
+{
+  "team_name": "my-ai-team",
+  "port": 8765,
+  "bind": "127.0.0.1",
+
+  "agents": [
+    { "name": "alice", "sessions_dir": "~/.aiteam/agents/alice/sessions" },
+    { "name": "bob",   "sessions_dir": "~/.aiteam/agents/bob/sessions" }
+  ],
+
+  "gateway": {
+    "service_name": "aiteam-gateway.service",
+    "process_name": "aiteam-gateway",
+    "port": 18789,
+    "log_files": [
+      "/var/log/aiteam/gateway.log",
+      "/var/log/aiteam/gateway-stderr.log"
+    ]
+  },
+
+  "thresholds": {
+    "active_minutes": 30,
+    "recent_hours": 4
+  }
+}
