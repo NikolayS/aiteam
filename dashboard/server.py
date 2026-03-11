@@ -8,15 +8,19 @@ and serves a single-page dashboard with a JSON API.
 Configuration: ./config.json (copy config.example.json to get started)
 """
 
+import hmac
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
+from html import escape as html_escape
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
 
 # ---------------------------------------------------------------------------
@@ -162,15 +166,16 @@ def get_gateway_status():
 
     # Port probe fallback
     if gw_port and (status == "unknown" or status == ""):
+        s = socket.socket()
         try:
-            s = socket.socket()
             s.settimeout(1)
             s.connect(("127.0.0.1", gw_port))
-            s.close()
             status = "active (port reachable)"
             pid = pid or "?"
         except Exception:
             status = "unreachable"
+        finally:
+            s.close()
 
     return {
         "status": status,
@@ -179,23 +184,28 @@ def get_gateway_status():
     }
 
 
-# Simple patterns that should never appear in dashboard output
-_SECRET_PATTERNS = ["sk-", "xoxb-", "xoxp-", "Bearer ", "token=", "key="]
+# Regex pattern matching common secret/token formats.
+# Each prefix is followed by a run of token-like characters.
+_SECRET_RE = re.compile(
+    r"(?:"
+    r"sk-ant-[a-zA-Z0-9_\-]+"       # Anthropic API keys
+    r"|sk-[a-zA-Z0-9_\-]{20,}"      # OpenAI-style keys
+    r"|xoxb-[a-zA-Z0-9\-]+"         # Slack bot tokens
+    r"|xoxp-[a-zA-Z0-9\-]+"         # Slack user tokens
+    r"|xapp-[a-zA-Z0-9\-]+"         # Slack app tokens
+    r"|ghp_[a-zA-Z0-9]{36,}"        # GitHub PATs
+    r"|github_pat_[a-zA-Z0-9_]{20,}"  # GitHub fine-grained PATs
+    r"|glpat-[a-zA-Z0-9\-_]{20,}"   # GitLab PATs
+    r"|Bearer\s+[a-zA-Z0-9_\-./]+"  # Bearer tokens
+    r"|token=[a-zA-Z0-9_\-./]+"     # token= query params
+    r"|key=[a-zA-Z0-9_\-./]+"       # key= query params
+    r")"
+)
 
 
 def _scrub(line):
-    """Strip substrings that look like secrets from a log line."""
-    for pat in _SECRET_PATTERNS:
-        idx = line.find(pat)
-        if idx != -1:
-            # Mask everything from the pattern start to the next whitespace
-            end = len(line)
-            for ch in (" ", "\t", '"', "'", ",", "}", "]"):
-                pos = line.find(ch, idx + len(pat))
-                if pos != -1:
-                    end = min(end, pos)
-            line = line[:idx] + "***REDACTED***" + line[end:]
-    return line
+    """Replace all secret-like substrings in a log line."""
+    return _SECRET_RE.sub("***REDACTED***", line)
 
 
 def get_errors():
@@ -224,8 +234,6 @@ def get_errors():
 
 def get_usage_data():
     """Compute recent daily activity across all agents."""
-    from collections import defaultdict
-
     daily = defaultdict(lambda: {"sessions": set(), "agents": set()})
 
     for agent in AGENTS:
@@ -393,6 +401,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <p class="refresh-note">Auto-refreshes every 30s &middot; <span id="refresh-at"></span></p>
 
 <script>
+function el(tag, cls, text) {{
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = String(text);
+  return e;
+}}
+
 async function load() {{
   const res = await fetch(window.location.pathname.replace(/\\/+$/, '') + '/api');
   const d = await res.json();
@@ -407,57 +422,72 @@ async function load() {{
     idle:    {{ cls: 'badge-gray',   label: 'Idle' }},
     unknown: {{ cls: 'badge-gray',   label: 'Unknown' }},
   }};
-  document.getElementById('agents').innerHTML = d.agents.map(a => {{
+  const agentsEl = document.getElementById('agents');
+  agentsEl.textContent = '';
+  d.agents.forEach(a => {{
     const cfg = statusCfg[a.status] || statusCfg.unknown;
-    return `
-    <div class="card">
-      <div class="card-title">Agent</div>
-      <div class="agent-name">${{a.name}}</div>
-      <span class="badge ${{cfg.cls}}">
-        <span class="dot"></span>
-        ${{cfg.label}}
-      </span>
-      <div class="agent-meta">
-        Last active: ${{a.last_active_ago}}<br>
-        Sessions: ${{a.session_count}}
-      </div>
-    </div>`;
-  }}).join('');
+    const card = el('div', 'card');
+    card.appendChild(el('div', 'card-title', 'Agent'));
+    card.appendChild(el('div', 'agent-name', a.name));
+    const badge = el('span', 'badge ' + cfg.cls);
+    badge.appendChild(el('span', 'dot'));
+    badge.appendChild(document.createTextNode(' ' + cfg.label));
+    card.appendChild(badge);
+    const meta = el('div', 'agent-meta');
+    meta.appendChild(document.createTextNode('Last active: ' + a.last_active_ago));
+    meta.appendChild(document.createElement('br'));
+    meta.appendChild(document.createTextNode('Sessions: ' + a.session_count));
+    card.appendChild(meta);
+    agentsEl.appendChild(card);
+  }});
 
   // --- Gateway ---
   const gw = d.gateway;
-  document.getElementById('gateway').innerHTML = `
-    <div class="card-title">Gateway</div>
-    <div class="kv"><span class="kv-label">Status</span>
-      <span class="kv-value ${{gw.healthy ? 'ok' : 'err'}}">${{gw.status}}</span>
-    </div>
-    <div class="kv"><span class="kv-label">PID</span>
-      <span class="kv-value">${{gw.pid || 'n/a'}}</span>
-    </div>
-  `;
+  const gwEl = document.getElementById('gateway');
+  gwEl.textContent = '';
+  gwEl.appendChild(el('div', 'card-title', 'Gateway'));
+  const kvStatus = el('div', 'kv');
+  kvStatus.appendChild(el('span', 'kv-label', 'Status'));
+  kvStatus.appendChild(el('span', 'kv-value ' + (gw.healthy ? 'ok' : 'err'), gw.status));
+  gwEl.appendChild(kvStatus);
+  const kvPid = el('div', 'kv');
+  kvPid.appendChild(el('span', 'kv-label', 'PID'));
+  kvPid.appendChild(el('span', 'kv-value', gw.pid || 'n/a'));
+  gwEl.appendChild(kvPid);
 
   // --- Activity ---
   const rows = (d.usage.recent_activity || []).slice().reverse();
   const tbody = document.getElementById('activity-body');
-  tbody.innerHTML = rows.length
-    ? rows.map(r => `<tr>
-        <td>${{r.date}}</td>
-        <td>${{r.sessionCount}}</td>
-        <td>${{(r.activeAgents || []).join(', ')}}</td>
-      </tr>`).join('')
-    : '<tr><td colspan="3" style="color:#888">No session data yet</td></tr>';
+  tbody.textContent = '';
+  if (rows.length === 0) {{
+    const tr = document.createElement('tr');
+    const td = el('td', null, 'No session data yet');
+    td.colSpan = 3;
+    td.style.color = '#888';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }} else {{
+    rows.forEach(r => {{
+      const tr = document.createElement('tr');
+      tr.appendChild(el('td', null, r.date));
+      tr.appendChild(el('td', null, r.sessionCount));
+      tr.appendChild(el('td', null, (r.activeAgents || []).join(', ')));
+      tbody.appendChild(tr);
+    }});
+  }}
 
   // --- Errors ---
   const errEl = document.getElementById('errors');
+  errEl.textContent = '';
   if (!d.errors || d.errors.length === 0) {{
-    errEl.innerHTML = '<span class="no-errors">No recent errors</span>';
+    errEl.appendChild(el('span', 'no-errors', 'No recent errors'));
   }} else {{
-    errEl.innerHTML = d.errors.map(e => `
-      <div class="error-item">
-        <div class="error-source">${{e.source}}</div>
-        ${{e.line}}
-      </div>
-    `).join('');
+    d.errors.forEach(e => {{
+      const item = el('div', 'error-item');
+      item.appendChild(el('div', 'error-source', e.source));
+      item.appendChild(document.createTextNode(e.line));
+      errEl.appendChild(item);
+    }});
   }}
 
   document.getElementById('refresh-at').textContent =
@@ -483,16 +513,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
     def _check_secret(self):
-        """Optional shared-secret auth. Returns True if OK."""
+        """Optional shared-secret auth (header only — never via query string)."""
         secret = os.environ.get("DASHBOARD_SECRET", "")
         if not secret:
             return True
-        qs = parse_qs(urlparse(self.path).query)
-        if qs.get("secret", [None])[0] == secret:
-            return True
-        if self.headers.get("X-Dashboard-Secret") == secret:
-            return True
-        return False
+        provided = self.headers.get("X-Dashboard-Secret", "")
+        if not provided:
+            return False
+        return hmac.compare_digest(provided, secret)
 
     def _send(self, code, content_type, body):
         self.send_response(code)

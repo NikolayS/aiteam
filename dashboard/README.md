@@ -126,13 +126,12 @@ Returns a JSON snapshot of all dashboard data.
 
 ### Optional shared-secret auth
 
-Set `DASHBOARD_SECRET` env var to require a secret on every request:
+Set `DASHBOARD_SECRET` env var to require a secret on every request (header only — never via query string, to avoid leaking in browser history and logs):
 
 ```bash
 export DASHBOARD_SECRET=my-secret
 python3 server.py
-# Access: http://127.0.0.1:8765/?secret=my-secret
-# Or header: X-Dashboard-Secret: my-secret
+# Access: curl -H "X-Dashboard-Secret: my-secret" http://127.0.0.1:8765/
 ```
 
 ### Recommended production setup
