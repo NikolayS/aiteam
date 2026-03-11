@@ -1,0 +1,28 @@
+[Unit]
+Description=AI Team Agent Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=agent
+WorkingDirectory=/home/agent/aiteam/dashboard
+ExecStart=/usr/bin/python3 /home/agent/aiteam/dashboard/server.py
+Restart=on-failure
+RestartSec=5
+
+# Optional: override config path, port, bind address, shared secret
+# Environment=DASHBOARD_CONFIG=/path/to/config.json
+# Environment=PORT=8765
+# Environment=BIND=127.0.0.1
+# Environment=DASHBOARD_SECRET=your-secret-here
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+ReadOnlyPaths=/
+ReadWritePaths=/tmp
+
+[Install]
+WantedBy=multi-user.target
