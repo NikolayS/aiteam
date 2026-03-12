@@ -195,11 +195,25 @@ _SECRET_RE = re.compile(
     r"|xapp-[a-zA-Z0-9\-]+"         # Slack app tokens
     r"|ghp_[a-zA-Z0-9]{36,}"        # GitHub PATs
     r"|github_pat_[a-zA-Z0-9_]{20,}"  # GitHub fine-grained PATs
+    r"|gho_[a-zA-Z0-9]{36,}"        # GitHub OAuth tokens
+    r"|ghs_[a-zA-Z0-9]{36,}"        # GitHub server-to-server tokens
+    r"|ghr_[a-zA-Z0-9]{36,}"        # GitHub refresh tokens
     r"|glpat-[a-zA-Z0-9\-_]{20,}"   # GitLab PATs
+    r"|AKIA[0-9A-Z]{16}"            # AWS access key IDs
+    r"|(?:aws_secret_access_key|aws_session_token)"
+    r"['\"]?\s*[:=]\s*['\"]?[a-zA-Z0-9/+=]{20,}"  # AWS secret values
+    r'|"private_key"\s*:\s*"-----BEGIN'  # GCP service account JSON keys
+    r"|eyJ[a-zA-Z0-9_\-]{20,}\.[eE][yY][jJ][a-zA-Z0-9_\-]{20,}\.[a-zA-Z0-9_\-]+" # JWT tokens
+    r"|(?:password|passwd|pwd|secret|api_key|apikey|api_secret"
+    r"|access_token|auth_token|client_secret)"
+    r"['\"]?\s*[:=]\s*['\"]?[^\s'\"]{8,}"  # Generic key=value secrets
+    r"|(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|amqp)"
+    r"://[^\s'\"]{10,}"             # DB connection strings with creds
     r"|Bearer\s+[a-zA-Z0-9_\-./]+"  # Bearer tokens
     r"|token=[a-zA-Z0-9_\-./]+"     # token= query params
     r"|key=[a-zA-Z0-9_\-./]+"       # key= query params
-    r")"
+    r")",
+    re.IGNORECASE,
 )
 
 
@@ -213,7 +227,10 @@ def get_errors():
     errors = []
     log_files = GATEWAY.get("log_files", [])
     for lf in log_files:
-        lf = expand(lf)
+        lf = os.path.realpath(expand(lf))
+        # Ensure the resolved path is a regular file (no symlink tricks)
+        if not os.path.isfile(lf):
+            continue
         try:
             result = subprocess.run(
                 ["tail", "-n", "50", lf],
@@ -502,6 +519,31 @@ load().catch(e => console.error('Dashboard load error:', e));
 
 
 # ---------------------------------------------------------------------------
+# Rate limiting for auth failures
+# ---------------------------------------------------------------------------
+
+# Track failed auth attempts per client IP: {ip: [timestamp, ...]}
+_AUTH_FAILURES = defaultdict(list)
+_RATE_LIMIT_WINDOW = 300   # 5-minute window
+_RATE_LIMIT_MAX = 10       # max failures before lockout
+
+
+def _is_rate_limited(client_ip):
+    """Check if client IP has exceeded the auth failure rate limit."""
+    now = time.time()
+    # Prune old entries
+    _AUTH_FAILURES[client_ip] = [
+        t for t in _AUTH_FAILURES[client_ip] if now - t < _RATE_LIMIT_WINDOW
+    ]
+    return len(_AUTH_FAILURES[client_ip]) >= _RATE_LIMIT_MAX
+
+
+def _record_auth_failure(client_ip):
+    """Record a failed auth attempt for rate limiting."""
+    _AUTH_FAILURES[client_ip].append(time.time())
+
+
+# ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
@@ -517,15 +559,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
         secret = os.environ.get("DASHBOARD_SECRET", "")
         if not secret:
             return True
+
+        client_ip = self.client_address[0]
+        if _is_rate_limited(client_ip):
+            return False
+
         provided = self.headers.get("X-Dashboard-Secret", "")
         if not provided:
+            _record_auth_failure(client_ip)
             return False
-        return hmac.compare_digest(provided, secret)
+        if not hmac.compare_digest(provided, secret):
+            _record_auth_failure(client_ip)
+            return False
+        return True
 
     def _send(self, code, content_type, body):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(body if isinstance(body, bytes) else body.encode())
 

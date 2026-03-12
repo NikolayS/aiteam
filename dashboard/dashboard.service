@@ -16,13 +16,46 @@ RestartSec=5
 # Environment=BIND=127.0.0.1
 # Environment=DASHBOARD_SECRET=your-secret-here
 
-# Hardening
+# Hardening — filesystem
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
 ReadOnlyPaths=/
 ReadWritePaths=/tmp
+
+# Hardening — capabilities and privileges
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+
+# Hardening — namespaces and execution
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+PrivateDevices=true
+PrivateUsers=true
+
+# Hardening — system calls (allow only what Python needs)
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap @reboot @obsolete
+SystemCallArchitectures=native
+
+# Hardening — network (only allow IPv4/IPv6 sockets)
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+# Hardening — misc
+UMask=0077
+RemoveIPC=true
 
 [Install]
 WantedBy=multi-user.target
