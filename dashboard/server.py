@@ -10,6 +10,7 @@ Configuration: ./config.json (copy config.example.json to get started)
 
 import hmac
 import json
+import logging
 import os
 import re
 import socket
@@ -24,6 +25,21 @@ from urllib.parse import urlparse
 
 
 # ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+LOG_LEVEL = os.environ.get("DASHBOARD_LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S%z",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("dashboard")
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
@@ -34,12 +50,18 @@ CONFIG_PATH = os.environ.get(
 
 
 def load_config():
+    """Load and validate the dashboard configuration file."""
     try:
         with open(CONFIG_PATH) as f:
             return json.load(f)
     except FileNotFoundError:
-        print(f"Config not found at {CONFIG_PATH}", file=sys.stderr)
-        print("Copy config.example.json to config.json and edit it.", file=sys.stderr)
+        logger.critical(
+            "Config not found at %s — copy config.example.json to config.json and edit it.",
+            CONFIG_PATH,
+        )
+        sys.exit(1)
+    except json.JSONDecodeError as exc:
+        logger.critical("Invalid JSON in %s: %s", CONFIG_PATH, exc)
         sys.exit(1)
 
 
@@ -59,10 +81,12 @@ RECENT_THRESHOLD_MS = THRESHOLDS.get("recent_hours", 4) * 3600 * 1000
 # ---------------------------------------------------------------------------
 
 def now_ms():
+    """Return current UTC time as milliseconds since epoch."""
     return int(time.time() * 1000)
 
 
 def fmt_ago(ms):
+    """Format a millisecond timestamp as a human-readable 'X ago' string."""
     if not ms:
         return "never"
     diff = (now_ms() - ms) / 1000
@@ -77,6 +101,7 @@ def fmt_ago(ms):
 
 
 def expand(path):
+    """Expand ~ and environment variables in a file path."""
     return os.path.expanduser(os.path.expandvars(path))
 
 
@@ -89,20 +114,32 @@ def get_agent_data():
     agents = []
     now = now_ms()
     for agent in AGENTS:
-        name = agent["name"]
+        name = agent.get("name", "unnamed")
         sessions_dir = expand(agent.get("sessions_dir", ""))
         sessions_file = os.path.join(sessions_dir, "sessions.json")
         try:
             with open(sessions_file) as f:
                 sessions = json.load(f)
+            if not isinstance(sessions, dict):
+                logger.warning("Sessions file for agent %s is not a JSON object: %s", name, sessions_file)
+                sessions = {}
             timestamps = [
                 v.get("updatedAt")
                 for v in sessions.values()
-                if v.get("updatedAt")
+                if isinstance(v, dict) and v.get("updatedAt")
             ]
             latest_ms = max(timestamps) if timestamps else 0
             session_count = len(sessions)
+        except FileNotFoundError:
+            logger.debug("Sessions file not found for agent %s: %s", name, sessions_file)
+            latest_ms = 0
+            session_count = 0
+        except json.JSONDecodeError as exc:
+            logger.warning("Malformed JSON in sessions file for agent %s: %s", name, exc)
+            latest_ms = 0
+            session_count = 0
         except Exception:
+            logger.exception("Unexpected error reading sessions for agent %s", name)
             latest_ms = 0
             session_count = 0
 
@@ -149,8 +186,10 @@ def get_gateway_status():
                 if s:
                     status = s
                     break
+            except subprocess.TimeoutExpired:
+                logger.warning("Timeout checking systemd service %s via %s", service_name, args[1])
             except Exception:
-                pass
+                logger.debug("Failed to check systemd service %s via %s", service_name, args[1], exc_info=True)
 
     # PID lookup
     pid = None
@@ -161,18 +200,20 @@ def get_gateway_status():
                 capture_output=True, text=True, timeout=3,
             )
             pid = result.stdout.strip().split("\n")[0] if result.stdout.strip() else None
+        except subprocess.TimeoutExpired:
+            logger.warning("Timeout running pgrep for %s", process_name)
         except Exception:
-            pass
+            logger.debug("Failed to pgrep for %s", process_name, exc_info=True)
 
     # Port probe fallback
     if gw_port and (status == "unknown" or status == ""):
-        s = socket.socket()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             s.settimeout(1)
             s.connect(("127.0.0.1", gw_port))
             status = "active (port reachable)"
             pid = pid or "?"
-        except Exception:
+        except OSError:
             status = "unreachable"
         finally:
             s.close()
@@ -227,8 +268,12 @@ def get_errors():
                         "source": os.path.basename(lf),
                         "line": _scrub(line.strip()),
                     })
+        except FileNotFoundError:
+            logger.debug("Log file not found: %s", lf)
+        except subprocess.TimeoutExpired:
+            logger.warning("Timeout reading log file: %s", lf)
         except Exception:
-            pass
+            logger.exception("Unexpected error reading log file: %s", lf)
     return errors[-20:]
 
 
@@ -237,21 +282,29 @@ def get_usage_data():
     daily = defaultdict(lambda: {"sessions": set(), "agents": set()})
 
     for agent in AGENTS:
-        name = agent["name"]
+        name = agent.get("name", "unnamed")
         sessions_dir = expand(agent.get("sessions_dir", ""))
         sessions_file = os.path.join(sessions_dir, "sessions.json")
         try:
             with open(sessions_file) as f:
                 sessions = json.load(f)
+            if not isinstance(sessions, dict):
+                continue
             for key, val in sessions.items():
+                if not isinstance(val, dict):
+                    continue
                 ua = val.get("updatedAt")
                 if ua:
                     dt = datetime.fromtimestamp(ua / 1000, tz=timezone.utc)
                     date = dt.strftime("%Y-%m-%d")
                     daily[date]["sessions"].add(key)
                     daily[date]["agents"].add(name)
+        except FileNotFoundError:
+            logger.debug("Sessions file not found for agent %s: %s", name, sessions_file)
+        except json.JSONDecodeError as exc:
+            logger.warning("Malformed JSON in sessions file for agent %s: %s", name, exc)
         except Exception:
-            pass
+            logger.exception("Unexpected error reading usage data for agent %s", name)
 
     sorted_dates = sorted(daily.keys())[-14:]
     recent_activity = []
@@ -266,6 +319,7 @@ def get_usage_data():
 
 
 def collect_all():
+    """Gather all dashboard data into a single dict for JSON serialization."""
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "generated_at_ms": now_ms(),
@@ -513,7 +567,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass
 
     def _check_secret(self):
-        """Optional shared-secret auth (header only — never via query string)."""
+        """Optional shared-secret auth (header only -- never via query string)."""
         secret = os.environ.get("DASHBOARD_SECRET", "")
         if not secret:
             return True
@@ -523,6 +577,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return hmac.compare_digest(provided, secret)
 
     def _send(self, code, content_type, body):
+        """Send an HTTP response with the given status, content-type, and body."""
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("X-Content-Type-Options", "nosniff")
@@ -540,7 +595,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = collect_all()
             self._send(200, "application/json", json.dumps(data, indent=2))
         elif path in ("/", ""):
-            html = HTML_TEMPLATE.format(team=TEAM_NAME)
+            # Escape team name to prevent XSS via config injection
+            html = HTML_TEMPLATE.format(team=html_escape(TEAM_NAME))
             self._send(200, "text/html; charset=utf-8", html)
         else:
             self.send_response(302)
@@ -553,14 +609,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 
 def main():
+    """Start the dashboard HTTP server."""
     port = int(os.environ.get("PORT", CFG.get("port", 8765)))
     bind = os.environ.get("BIND", CFG.get("bind", "127.0.0.1"))
     server = HTTPServer((bind, port), DashboardHandler)
-    print(f"Dashboard running on http://{bind}:{port}/")
+    logger.info("Dashboard running on http://%s:%d/", bind, port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down.")
+        logger.info("Shutting down.")
         server.server_close()
 
 
