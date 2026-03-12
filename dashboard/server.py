@@ -10,6 +10,7 @@ Configuration: ./config.json (copy config.example.json to get started)
 
 import hmac
 import json
+import logging
 import os
 import re
 import socket
@@ -21,6 +22,24 @@ from datetime import datetime, timezone
 from html import escape as html_escape
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+LOG_LEVEL = os.environ.get("DASHBOARD_LOG_LEVEL", "INFO").upper()
+
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S%z",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("dashboard")
+
+# Track startup time for /healthz uptime reporting.
+_START_TIME = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +57,13 @@ def load_config():
         with open(CONFIG_PATH) as f:
             return json.load(f)
     except FileNotFoundError:
-        print(f"Config not found at {CONFIG_PATH}", file=sys.stderr)
-        print("Copy config.example.json to config.json and edit it.", file=sys.stderr)
+        logger.critical(
+            "Config not found at %s — copy config.example.json to config.json and edit it.",
+            CONFIG_PATH,
+        )
+        sys.exit(1)
+    except json.JSONDecodeError as exc:
+        logger.critical("Invalid JSON in %s: %s", CONFIG_PATH, exc)
         sys.exit(1)
 
 
@@ -102,7 +126,16 @@ def get_agent_data():
             ]
             latest_ms = max(timestamps) if timestamps else 0
             session_count = len(sessions)
+        except FileNotFoundError:
+            logger.warning("Sessions file not found for agent %s: %s", name, sessions_file)
+            latest_ms = 0
+            session_count = 0
+        except (json.JSONDecodeError, AttributeError) as exc:
+            logger.error("Failed to parse sessions file for agent %s: %s", name, exc)
+            latest_ms = 0
+            session_count = 0
         except Exception:
+            logger.exception("Unexpected error reading sessions for agent %s", name)
             latest_ms = 0
             session_count = 0
 
@@ -149,8 +182,10 @@ def get_gateway_status():
                 if s:
                     status = s
                     break
+            except subprocess.TimeoutExpired:
+                logger.warning("Timeout checking systemd service %s via %s", service_name, args[1])
             except Exception:
-                pass
+                logger.debug("Failed to check systemd service %s via %s", service_name, args[1], exc_info=True)
 
     # PID lookup
     pid = None
@@ -162,7 +197,7 @@ def get_gateway_status():
             )
             pid = result.stdout.strip().split("\n")[0] if result.stdout.strip() else None
         except Exception:
-            pass
+            logger.debug("Failed to pgrep for %s", process_name, exc_info=True)
 
     # Port probe fallback
     if gw_port and (status == "unknown" or status == ""):
@@ -173,6 +208,7 @@ def get_gateway_status():
             status = "active (port reachable)"
             pid = pid or "?"
         except Exception:
+            logger.debug("Gateway port %d unreachable", gw_port)
             status = "unreachable"
         finally:
             s.close()
@@ -227,8 +263,10 @@ def get_errors():
                         "source": os.path.basename(lf),
                         "line": _scrub(line.strip()),
                     })
+        except FileNotFoundError:
+            logger.warning("Log file not found: %s", lf)
         except Exception:
-            pass
+            logger.exception("Error reading log file %s", lf)
     return errors[-20:]
 
 
@@ -250,8 +288,10 @@ def get_usage_data():
                     date = dt.strftime("%Y-%m-%d")
                     daily[date]["sessions"].add(key)
                     daily[date]["agents"].add(name)
+        except FileNotFoundError:
+            pass  # Already logged in get_agent_data; avoid duplicate warnings.
         except Exception:
-            pass
+            logger.exception("Error computing usage data for agent %s", name)
 
     sorted_dates = sorted(daily.keys())[-14:]
     recent_activity = []
@@ -508,9 +548,9 @@ load().catch(e => console.error('Dashboard load error:', e));
 class DashboardHandler(BaseHTTPRequestHandler):
     """Serves the dashboard HTML and JSON API."""
 
-    # Suppress default access logs
     def log_message(self, fmt, *args):
-        pass
+        """Route HTTP access logs through the stdlib logger at DEBUG level."""
+        logger.debug("HTTP %s", fmt % args)
 
     def _check_secret(self):
         """Optional shared-secret auth (header only — never via query string)."""
@@ -531,12 +571,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if not self._check_secret():
+            logger.warning(
+                "Rejected request with invalid/missing secret from %s",
+                self.client_address[0],
+            )
             self._send(403, "text/plain", "Forbidden")
             return
 
         path = urlparse(self.path).path.rstrip("/") or "/"
 
-        if path == "/api":
+        if path == "/healthz":
+            uptime_s = int(time.monotonic() - _START_TIME)
+            health = {
+                "status": "ok",
+                "uptime_seconds": uptime_s,
+                "config_path": CONFIG_PATH,
+                "agents_configured": len(AGENTS),
+            }
+            self._send(200, "application/json", json.dumps(health))
+        elif path == "/api":
             data = collect_all()
             self._send(200, "application/json", json.dumps(data, indent=2))
         elif path in ("/", ""):
@@ -556,11 +609,11 @@ def main():
     port = int(os.environ.get("PORT", CFG.get("port", 8765)))
     bind = os.environ.get("BIND", CFG.get("bind", "127.0.0.1"))
     server = HTTPServer((bind, port), DashboardHandler)
-    print(f"Dashboard running on http://{bind}:{port}/")
+    logger.info("Dashboard running on http://%s:%d/", bind, port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down.")
+        logger.info("Shutting down.")
         server.server_close()
 
 

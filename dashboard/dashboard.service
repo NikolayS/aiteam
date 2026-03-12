@@ -15,6 +15,14 @@ RestartSec=5
 # Environment=PORT=8765
 # Environment=BIND=127.0.0.1
 # Environment=DASHBOARD_SECRET=your-secret-here
+# Environment=DASHBOARD_LOG_LEVEL=INFO
+
+# Resource limits — prevent the dashboard from consuming excessive resources.
+MemoryMax=256M
+MemoryHigh=192M
+CPUQuota=50%
+TasksMax=32
+LimitNOFILE=1024
 
 # Hardening
 NoNewPrivileges=true
