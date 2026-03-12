@@ -71,15 +71,18 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now aiteam-dashboard
 ```
 
-### Behind a reverse proxy (nginx example)
+### Behind nginx (with NoVNC tab bar)
 
-```nginx
-location /dashboard {
-    proxy_pass http://127.0.0.1:8765;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-}
+The full nginx config is at `nginx/novnc.conf`. It serves both the dashboard
+and NoVNC screen viewer, with a shared navigation bar injected via `sub_filter`:
+
+- `/dashboard` — proxies to the dashboard backend on port 8765
+- `/` — proxies to NoVNC (websockify) on port 6081, with a nav bar injected into the HTML
+
+```bash
+sudo cp nginx/novnc.conf /etc/nginx/sites-available/novnc
+sudo ln -sf /etc/nginx/sites-available/novnc /etc/nginx/sites-enabled/novnc
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 When running behind a proxy at a subpath, the dashboard auto-discovers its
