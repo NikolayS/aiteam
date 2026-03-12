@@ -3,8 +3,6 @@
 A lightweight Python dashboard for monitoring autonomous AI agents on a VM.
 Zero dependencies beyond the Python 3.10+ standard library.
 
-![Dark theme with agent status cards, gateway health, activity log, and error feed](screenshot-placeholder.png)
-
 ## What it shows
 
 | Section | Description |
@@ -74,16 +72,17 @@ sudo systemctl enable --now aiteam-dashboard
 ### Behind a reverse proxy (nginx example)
 
 ```nginx
-location /dashboard {
-    proxy_pass http://127.0.0.1:8765;
+location /dashboard/ {
+    proxy_pass http://127.0.0.1:8765/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
 }
 ```
 
-When running behind a proxy at a subpath, the dashboard auto-discovers its
-base path from `window.location.pathname` for API calls.
+The trailing `/` on both `location` and `proxy_pass` is required so that
+nginx strips the `/dashboard` prefix before forwarding to the server. The
+server only handles `/` and `/api`, so the proxy must rewrite the path.
 
 ## API
 

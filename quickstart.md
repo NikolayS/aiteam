@@ -185,8 +185,10 @@ Once setup is complete, you can access your agent's desktop in a browser:
    - Visit `https://agent.yourdomain.com/vnc.html`
 
 2. **If using IP directly (quick test):**
+   - First, open the firewall for noVNC: `sudo ufw allow 6081/tcp comment 'noVNC'`
    - Open `http://<VM_IP>:6081/vnc.html` in your browser
    - Enter your VNC password
+   - **Warning:** This exposes noVNC without encryption. Use only for quick testing, then remove the rule with `sudo ufw delete allow 6081/tcp`.
 
 You should see an Xfce desktop. This is your agent's workspace.
 
@@ -207,9 +209,11 @@ ssh -i ~/.ssh/ai-agent -p 2223 agent@<VM_IP>
 Then on the VM:
 
 ```bash
-# Install Node.js 22 (required for OpenClaw)
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y nodejs
+# Install Node.js via nvm (see software-stack.md for details)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+source ~/.bashrc
+nvm install --lts
+nvm alias default node
 
 # Install OpenClaw
 npm install -g openclaw
@@ -374,5 +378,5 @@ Telegram / WhatsApp / Slack ◄──────────────┘
 **What's next:**
 - Customize your agent's identity (see [ai-engineer-identity.md](ai-engineer-identity.md))
 - Add more agents on the same VM (see multi-agent setup in [software-stack.md](software-stack.md))
-- Set up monitoring and health checks
+- Set up monitoring with the [dashboard](dashboard/README.md)
 - Connect additional services (email, voice, etc.)

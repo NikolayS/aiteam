@@ -141,6 +141,10 @@ sudo chmod 600 /etc/ssl/cloudflare/${DOMAIN}.key
 
 #### 5. nginx configuration (`/etc/nginx/sites-available/novnc`)
 
+This is a minimal plain-HTTP example for local testing. For production, use
+the multi-agent SSL configuration below (or see the Cloudflare Origin CA
+setup in step 4 above) and restrict port 443 to Cloudflare IPs via UFW.
+
 ```nginx
 server {
     listen 6080;

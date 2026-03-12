@@ -14,6 +14,7 @@ New here? Follow the **[quickstart.md](quickstart.md)** — it takes you from ze
 | [infrastructure.md](infrastructure.md) | VM creation, SSH hardening, firewall, security configuration |
 | [software-stack.md](software-stack.md) | Development tools, languages, remote access (VNC/noVNC), multi-agent setup |
 | [ai-engineer-identity.md](ai-engineer-identity.md) | Baseline identity, personality, and operating guidelines for an AI engineer agent |
+| [dashboard/](dashboard/) | Lightweight status dashboard for monitoring AI agents (see [dashboard/README.md](dashboard/README.md)) |
 
 ## License
 
